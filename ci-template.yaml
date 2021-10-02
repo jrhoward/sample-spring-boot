@@ -1,0 +1,61 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: springboot-ci-
+
+spec:
+  serviceAccountName: argo-workflow
+  entrypoint: springboot-ci
+  arguments:
+    parameters:
+    - name: repo
+      value: https://github.com/jrhoward/sample-spring-boot.git
+    - name: revision
+      value: 'v1.0.0'
+
+  templates:
+  - name: springboot-ci
+    steps:
+    - - name: checkout
+        template: checkout
+    - - name: unit-tests
+        template: unit-tests
+        arguments:
+          artifacts:
+          - name: source
+            from: "{{steps.checkout.outputs.artifacts.source}}"
+  - name: checkout
+    inputs:
+      artifacts:
+      - name: source
+        path: /src
+        git:
+          repo: "{{workflow.parameters.repo}}"
+          revision: "{{workflow.parameters.revision}}"
+    outputs:
+      artifacts:
+      - name: source
+        path: /src
+    container:
+      image: bitnami/git:latest
+      command: ["/bin/sh", "-c"]
+      args: ["cd /src && git status && ls -l"]
+
+  - name: unit-tests
+    inputs:
+      artifacts:
+      - name: source
+        path: /src/
+    outputs:
+      artifacts:
+      - name: unit-tests
+        path: /src/build/test-results/
+    container:
+      image: eclipse-temurin:11.0.12_7-jdk
+      command: ["/bin/sh", "-c"]
+      args:
+        - "cd /src/ && ./gradlew test --stacktrace"
+      resources:
+        requests:
+          memory: 2048Mi
+          cpu: 1024m

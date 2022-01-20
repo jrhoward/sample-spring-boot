@@ -1,0 +1,145 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: springboot-ci-
+
+spec:
+  # volumes:
+  #   - name: kaniko-secret
+  #     secret:
+  #       secretName: kaniko-secret
+  serviceAccountName: argo-workflow
+  entrypoint: springboot-ci
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10010
+  arguments:
+    parameters:
+    - name: repo
+      value: "https://github.com/jrhoward/sample-spring-boot.git"
+    - name: revision
+      value: "main"
+    - name: registry
+      value: "cluster-docker-registry.registry:5000"
+    - name: repository
+      value: "demo"
+  templates:
+  - name: springboot-ci
+    steps:
+    - - name: git-checkout
+        template: checkout
+    - - name: run-unit-tests
+        template: unit-tests
+        arguments:
+          artifacts:
+          - name: source
+            from: "{{steps.git-checkout.outputs.artifacts.source}}"
+    - - name: build-application
+        template: build
+        arguments:
+          artifacts:
+          - name: source
+            from: "{{steps.git-checkout.outputs.artifacts.source}}"
+    - - name: publish-docker-image
+        template: publish
+        arguments:
+          artifacts:
+          - name: build
+            from: "{{steps.build-application.outputs.artifacts.build}}"
+          parameters:
+          - name: githash
+            value: "{{steps.git-checkout.outputs.result}}"
+          - name: registry
+            value: "{{workflow.parameters.registry}}"
+          - name: repository
+            value: "{{workflow.parameters.repository}}"
+
+  - name: checkout
+    inputs:
+      artifacts:
+      - name: source
+        path: /src
+        git:
+          repo: "{{workflow.parameters.repo}}"
+          revision: "{{workflow.parameters.revision}}"
+    outputs:
+      artifacts:
+      - name: source
+        path: /src
+    script:
+      image: bitnami/git:latest
+      command: ["bash"]
+      source: | 
+        cd /src
+        git rev-parse --short HEAD
+
+ # https://github.com/open-policy-agent/conftest
+
+  - name: unit-tests
+    inputs:
+      artifacts:
+      - name: source
+        path: /src
+    outputs:
+      artifacts:
+      - name: unit-tests
+        path: /src
+    container:
+      image: eclipse-temurin:11.0.12_7-jdk
+      command: ["/bin/sh", "-c"]
+      args:
+        - "cd /src && ./gradlew test --stacktrace --no-watch-fs --no-daemon"
+      resources:
+        requests:
+          memory: 2048Mi
+          cpu: 1024m
+
+  - name: build
+    inputs:
+      artifacts:
+      - name: source
+        path: /src
+    outputs:
+      artifacts:
+      - name: build
+        path: /src
+    container:
+      image: eclipse-temurin:11.0.12_7-jdk
+      command: ["/bin/sh", "-c"]
+      args:
+        - "cd /src && ./gradlew bootJar --no-watch-fs --no-daemon"
+      resources:
+        requests:
+          memory: 2048Mi
+          cpu: 1024m
+
+  - name: publish
+    inputs:
+      artifacts:
+      - name: build
+        path: /src
+      parameters:
+      - name: githash
+      - name: registry
+      - name: repository
+    container:
+      image: gcr.io/kaniko-project/executor:latest
+      env:
+        - name: REVISION
+          value: ""
+      args:
+        - "--dockerfile=/src/Dockerfile"
+        - "--context=/src"
+        - "--destination={{registry}}/{{repository}}:{{githash}}"
+        - "--force"
+        - "--insecure"
+        - "--build-arg TAG={{githash}}"
+      resources:
+        requests:
+          memory: 2048Mi
+          cpu: 1024m
+      # volumeMounts:
+      #   - name: kaniko-secret
+      #     mountPath: /kaniko/.docker/
+
+# https://github.com/sigstore/cosign
